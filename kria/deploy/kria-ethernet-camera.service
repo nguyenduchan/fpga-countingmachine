@@ -1,0 +1,15 @@
+[Unit]
+Description=Kria KV260 OV9281 Ethernet camera (Ubuntu 24.04)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Environment=KRIA_CONFIG=/etc/kria-ethernet-camera/board.conf
+ExecStart=/usr/local/bin/kria_eth_camera --config /etc/kria-ethernet-camera/board.conf
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

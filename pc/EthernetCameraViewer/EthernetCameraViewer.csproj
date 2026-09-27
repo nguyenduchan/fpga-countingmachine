@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWindowsForms>true</UseWindowsForms>
+    <RootNamespace>EthernetCameraViewer</RootNamespace>
+    <AssemblyName>EthernetCameraViewer</AssemblyName>
+    <ApplicationTitle>Kria KV260 Ethernet Camera Viewer</ApplicationTitle>
+    <Description>PC viewer for the Kria KV260 OV9281 Ethernet camera on Ubuntu 24.04</Description>
+    <Version>1.0.0</Version>
+  </PropertyGroup>
+
+  <!-- Same board identity as config/board.conf and kria/CMakeLists.txt. -->
+  <ItemGroup>
+    <AssemblyMetadata Include="BoardName" Value="Kria KV260" />
+    <AssemblyMetadata Include="UbuntuVersion" Value="24.04" />
+    <AssemblyMetadata Include="CameraModel" Value="OV9281" />
+  </ItemGroup>
+</Project>

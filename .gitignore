@@ -1,0 +1,39 @@
+kria/build/
+config/kria.local.conf
+pc/**/bin/
+pc/**/obj/
+pc/**/Sessions/
+viewer-settings.json
+*.user
+*.suo
+.vs/
+.vscode/
+
+# Vitis HLS and Vivado outputs. The scripts and C++ source regenerate these.
+fpga/hls/tile_brightness_hls/
+fpga/hls/tile_brightness.zip
+fpga/hls/logs/
+fpga/vivado/kv260_tile/
+**/.Xil/
+**/.autopilot/
+**/dfx_runtime.txt
+
+# Kernel module build products
+kria/fpga_frame/*.o
+kria/fpga_frame/*.ko
+kria/fpga_frame/*.mod
+kria/fpga_frame/*.mod.c
+kria/fpga_frame/*.cmd
+kria/fpga_frame/.*.cmd
+kria/fpga_frame/modules.order
+kria/fpga_frame/Module.symvers
+kria/fpga_frame/.tmp_versions/
+
+# Bitstreams and tool logs
+*.bit
+*.bit.bin
+*.jou
+*.log
+*.str
+*.dcp
+*.zip
