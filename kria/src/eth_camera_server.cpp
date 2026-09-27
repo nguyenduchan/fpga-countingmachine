@@ -502,6 +502,10 @@ void run_session(int fd, const AppConfig& config, UsbCamera& camera, SessionCont
             std::string run_error;
             if (!fpga.process(gray, processed, config.tile_width, config.tile_height, cycles, wait_us, run_error) ||
                 cycles == 0 || processed.empty()) {
+                log_line("fpga reject gray " + std::to_string(gray.cols) + "x" + std::to_string(gray.rows) + " tile " +
+                         std::to_string(config.tile_width) + "x" + std::to_string(config.tile_height) + " cycles " +
+                         std::to_string(cycles) + " wait " + std::to_string(static_cast<int>(wait_us)) + " err " +
+                         run_error);
                 std::lock_guard<std::mutex> lock(queue_mu);
                 pipe_error = run_error.empty() ? "FPGA tile core returned no result" : run_error;
                 pipe_stop = true;

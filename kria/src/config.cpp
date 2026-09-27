@@ -120,12 +120,12 @@ void AppConfig::sanitize() {
     }
     if (tile_width < 8) {
         tile_width = 8;
-    } else if (tile_width > 128) {
-        tile_width = 128;
+    } else if (tile_width > 256) {
+        tile_width = 256;
     }
     if (tile_height < 8) {
         tile_height = 8;
-    } else if (tile_height > 128) {
-        tile_height = 128;
+    } else if (tile_height > 256) {
+        tile_height = 256;
     }
 }
