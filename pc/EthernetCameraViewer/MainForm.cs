@@ -13,7 +13,7 @@ internal sealed class MainForm : Form
     private static readonly Color FolderColor = Color.FromArgb(55, 71, 79);
     private static readonly Color DisabledColor = Color.FromArgb(189, 189, 189);
 
-    private readonly TextBox _host = new() { Width = 200, PlaceholderText = "192.168.2.1" };
+    private readonly TextBox _host = new() { Width = 200, Text = "127.0.0.1" };
     private readonly TextBox _port = new() { Width = 70, Text = "5600" };
     private readonly Button _start = new() { Text = "Bắt đầu", Width = 110, Height = 34 };
     private readonly Button _stop = new() { Text = "Dừng", Width = 110, Height = 34 };
@@ -83,6 +83,7 @@ internal sealed class MainForm : Form
     private bool _busy;
     private bool _closing;
     private string? _lastError;
+    private readonly bool _localhost;
 
     public MainForm(string[] args)
     {
@@ -95,14 +96,21 @@ internal sealed class MainForm : Form
         DoubleBuffered = true;
 
         BuildLayout();
-        LoadSettings(args);
+        _localhost = args.Any(arg => arg == "--localhost");
+        LoadSettings(args.Where(arg => arg != "--localhost").ToArray());
+        if (_localhost)
+        {
+            _host.Text = "127.0.0.1";
+            _port.Text = "5600";
+            Shown += (_, _) => OnStartClick(this, EventArgs.Empty);
+        }
         SetButton(_start, false, StartColor);
         SetButton(_stop, false, StopColor);
         SetButton(_openFolder, false, FolderColor);
         _start.Enabled = true;
         SetButton(_start, true, StartColor);
         _boardLabel.Text = $"Mục tiêu: {ProjectBoard.Name}, Ubuntu {ProjectBoard.UbuntuVersion}, camera {ProjectBoard.CameraModel}";
-        _status.Text = "Nhập địa chỉ Ethernet của Kria, rồi bấm Bắt đầu. Mỗi lần Bắt đầu / Dừng là một phiên.";
+        _status.Text = "C# chỉ đọc luồng và hiển thị. Bấm Bắt đầu để nối localhost:5600.";
 
         _start.Click += OnStartClick;
         _stop.Click += OnStopClick;
@@ -202,6 +210,9 @@ internal sealed class MainForm : Form
 
     private void LoadSettings(string[] args)
     {
+        var configPath = FindProjectConfig(args);
+        var plainArgs = args.Where((arg, index) => arg != "--config" && (index == 0 || args[index - 1] != "--config")).ToArray();
+        args = plainArgs;
         try
         {
             if (File.Exists(_settingsPath))
@@ -226,12 +237,91 @@ internal sealed class MainForm : Form
             _status.Text = "Không đọc được cài đặt cũ: " + ex.Message;
         }
 
+        ApplyProjectConfig(configPath);
+
         if (args.Length >= 1)
         {
             _host.Text = args[0];
         }
 
         if (args.Length >= 2 && int.TryParse(args[1], out var port) && port is > 0 and <= 65535)
+        {
+            _port.Text = port.ToString();
+        }
+    }
+
+    private static string? FindProjectConfig(string[] args)
+    {
+        for (var index = 0; index < args.Length - 1; ++index)
+        {
+            if (args[index] == "--config")
+            {
+                return args[index + 1];
+            }
+        }
+
+        foreach (var candidate in new[] { "config/laptop.conf", "../config/laptop.conf", "../../config/laptop.conf" })
+        {
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        return null;
+    }
+
+    private void ApplyProjectConfig(string? path)
+    {
+        if (path == null || !File.Exists(path))
+        {
+            return;
+        }
+
+        string? host = null;
+        string? bindAddress = null;
+        var port = 0;
+        foreach (var raw in File.ReadAllLines(path))
+        {
+            var line = raw.Trim();
+            if (line.Length == 0 || line[0] == '#')
+            {
+                continue;
+            }
+
+            var split = line.IndexOf('=');
+            if (split <= 0)
+            {
+                continue;
+            }
+
+            var key = line[..split].Trim();
+            var value = line[(split + 1)..].Trim();
+            if (key == "host")
+            {
+                host = value;
+            }
+            else if (key == "bind_address")
+            {
+                bindAddress = value;
+            }
+            else if (key == "port" && int.TryParse(value, out var parsed))
+            {
+                port = parsed;
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(host) && !string.IsNullOrWhiteSpace(bindAddress) && bindAddress != "0.0.0.0")
+        {
+            host = bindAddress;
+        }
+
+        if (!string.IsNullOrWhiteSpace(host))
+        {
+            _host.Text = host;
+        }
+
+        if (port is > 0 and <= 65535)
         {
             _port.Text = port.ToString();
         }

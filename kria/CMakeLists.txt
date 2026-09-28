@@ -16,6 +16,7 @@ add_executable(kria_eth_camera
     src/main.cpp
     src/config.cpp
     src/usb_camera.cpp
+    src/mjpeg_decode.cpp
     src/eth_camera_server.cpp
     src/tile_balance.cpp
     src/fpga_tile.cpp
@@ -37,6 +38,7 @@ target_compile_definitions(kria_eth_camera PRIVATE
 target_link_libraries(kria_eth_camera PRIVATE
     ${OpenCV_LIBS}
     turbojpeg
+    jpeg
     Threads::Threads
 )
 

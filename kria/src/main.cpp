@@ -15,9 +15,11 @@ void print_usage() {
         << "kria_eth_camera — USB OV9281 to Ethernet camera\n"
         << "Board target: Kria KV260, Ubuntu 24.04\n\n"
         << "Usage:\n"
-        << "  kria_eth_camera [--config FILE] [--device PATH] [--bind ADDR] [--port N]\n\n"
-        << "The board name and Ubuntu version come from config/board.conf.\n"
-        << "Defaults: Kria KV260, Ubuntu 24.04, OV9281, /dev/video0, port 5600.\n";
+        << "  kria_eth_camera --config config/board.conf\n\n"
+        << "Settings live in the config file, not on the command line.\n"
+        << "  config/board.conf    Kria KV260, OV9281, MJPEG 1280x800\n"
+        << "  config/laptop.conf   this laptop, LG Camera, YUY2 640x480, localhost:5600\n\n"
+        << "Optional overrides: [--device PATH] [--bind ADDR] [--port N]\n";
 }
 
 bool file_exists(const std::string& path) {
@@ -30,8 +32,11 @@ std::string find_config() {
     const std::vector<std::string> candidates = {
         from_env ? from_env : "",
         "config/board.conf",
+        "config/laptop.conf",
         "../config/board.conf",
+        "../config/laptop.conf",
         "../../config/board.conf",
+        "../../config/laptop.conf",
         "/etc/kria-ethernet-camera/board.conf",
         "/usr/local/etc/kria-ethernet-camera/board.conf",
     };
@@ -65,6 +70,18 @@ int main(int argc, char** argv) {
         if (arg == "-h" || arg == "--help") {
             print_usage();
             return 0;
+        }
+        if (arg == "--mode") {
+            const char* value = need_value("--mode");
+            if (value == nullptr) {
+                return 2;
+            }
+            if (std::string(value) != "board") {
+                log_line(std::string(value) +
+                         " is the laptop mode. On this board use --mode board. On the laptop run: python pc/mjpeg_pipeline.py --mode sim");
+                return 2;
+            }
+            continue;
         }
         if (arg == "--config") {
             const char* value = need_value("--config");

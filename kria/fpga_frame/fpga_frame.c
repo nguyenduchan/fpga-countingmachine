@@ -5,6 +5,7 @@
 #include <linux/kprobes.h>
 #include <linux/miscdevice.h>
 #include <linux/mm.h>
+#include <asm/pgtable.h>
 #include <linux/module.h>
 #include <linux/uaccess.h>
 
@@ -41,6 +42,9 @@ static int fpga_frame_mmap(struct file *file, struct vm_area_struct *vma)
 
 	if (pages == NULL || size > frame_pages * PAGE_SIZE)
 		return -EINVAL;
+	/* Same physical pages for the APU and the FPGA HP port. Non-cached so a
+	 * CPU store is visible in DDR when the PL reads it. */
+	vma->vm_page_prot = pgprot_writecombine(vma->vm_page_prot);
 	return remap_pfn_range(vma, vma->vm_start, page_to_pfn(pages), size, vma->vm_page_prot);
 }
 

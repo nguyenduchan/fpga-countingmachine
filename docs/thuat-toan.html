@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Thuật toán xử lý ảnh trên FPGA</title>
+  <style>
+    :root {
+      --ink: #1c1915;
+      --muted: #5c564c;
+      --line: #e4ddd2;
+      --paper: #f7f4ee;
+      --card: #fffdf9;
+      --accent: #8a4b16;
+      --chip: #efe6d8;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--paper);
+      font: 18px/1.55 "Segoe UI", Candara, sans-serif;
+    }
+    header {
+      padding: 48px 24px 28px;
+      border-bottom: 1px solid var(--line);
+      background: #fffdf9;
+    }
+    header, main { max-width: 920px; margin: 0 auto; }
+    h1 { font-size: 34px; line-height: 1.2; margin: 0 0 12px; letter-spacing: -0.03em; }
+    h2 { font-size: 22px; margin: 36px 0 10px; letter-spacing: -0.02em; }
+    h3 { font-size: 18px; margin: 0 0 8px; }
+    p { margin: 0 0 12px; }
+    .lead { color: var(--muted); max-width: 68ch; }
+    main { padding: 8px 24px 72px; }
+    nav {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 22px 0 8px;
+    }
+    nav a {
+      color: var(--ink);
+      text-decoration: none;
+      background: var(--chip);
+      border-radius: 999px;
+      padding: 4px 10px;
+      font-size: 14px;
+    }
+    nav a:hover { background: #e4d4bf; }
+    article {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 18px 20px 8px;
+      margin: 14px 0;
+    }
+    .tag {
+      display: inline-block;
+      font-size: 12px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: 6px;
+    }
+    dl { margin: 8px 0 14px; }
+    dt { font-weight: 650; margin-top: 8px; }
+    dd { margin: 2px 0 0; color: var(--muted); }
+    code {
+      font-family: Consolas, "Cascadia Mono", monospace;
+      font-size: 0.92em;
+      background: var(--chip);
+      padding: 0 4px;
+      border-radius: 4px;
+    }
+    table { width: 100%; border-collapse: collapse; margin: 12px 0 20px; font-size: 16px; }
+    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { font-size: 13px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Thuật toán xử lý ảnh trên FPGA</h1>
+    <p class="lead">Các bộ lọc này là dạng số nguyên của chức năng tiền xử lý trên Keyence CV-X, chạy trên ảnh xám 8 bit, tối đa 1280×800. Mã nằm trong <code>fpga/hls/keyence/</code>. Trang này nói mỗi thuật toán làm gì với điểm ảnh, và lúc nào nên bật nó.</p>
+    <nav>
+      <a href="#thu-tu">Thứ tự</a>
+      <a href="#sang">Sáng</a>
+      <a href="#nhieu">Nhiễu</a>
+      <a href="#bien">Biên</a>
+      <a href="#tach">Tách lỗi</a>
+      <a href="#vung">Vùng</a>
+      <a href="#den">Đèn nhiều hướng</a>
+    </nav>
+  </header>
+  <main>
+    <h2 id="thu-tu">Thứ tự khi dùng nhiều bộ lọc</h2>
+    <p>Chuỗi hợp với máy đếm là cân sáng, làm mờ hoặc lấy trung vị, kéo tương phản, nhị phân, co nở, rồi mới đếm blob. Mỗi bước nhận ảnh của bước trước.</p>
+    <p>Sobel ngang, Sobel dọc, Prewitt, Roberts, Laplacian, shading và trừ ảnh chuẩn có thể đọc cùng một khung từ camera. Kết quả của chúng là các ảnh riêng. Xếp cái nào chạy trước cũng không đổi pixel.</p>
+
+    <h2 id="sang">Cân sáng và tương phản</h2>
+
+    <article id="shading">
+      <div class="tag">Shading</div>
+      <h3>Bù nền không đều</h3>
+      <p>Mỗi điểm được nhân với hệ số sao cho trung bình cửa sổ 32×32 quanh nó tiến về 128. Hệ số tối đa 8 lần. Vùng phẳng đổi sáng theo hình dáng sản phẩm trở thành một mức xám gần như đều. Vết tối hoặc sáng nhỏ, hẹp hơn cửa sổ, vẫn còn.</p>
+      <dl>
+        <dt>Khi nào dùng</dt>
+        <dd>Bề mặt cong, mép khuôn, hoặc đèn không phủ đều, khiến cùng một lỗi bị sáng khác nhau tùy vị trí. Bật trước nhị phân và blob, nếu không ngưỡng đúng ở giữa ảnh sẽ sai ở rìa.</dd>
+      </dl>
+    </article>
+
+    <article id="preserve">
+      <div class="tag">Preserve intensity</div>
+      <h3>Giữ độ sáng theo ảnh chuẩn</h3>
+      <p>Tính trung bình cả khung hiện tại và khung chuẩn, lấy một hệ số chung, nhân mọi điểm. Ảnh phẳng 50 trở thành cùng mức với ảnh chuẩn 100. Đây là một số cho cả khung, không phải một số cho từng vùng.</p>
+      <dl>
+        <dt>Khi nào dùng</dt>
+        <dd>Đèn yếu hoặc mạnh hơn lúc dạy máy, nhưng hình dạng vùng sáng vẫn như cũ. Ngưỡng nhị phân đã gắn trên ảnh chuẩn thì được giữ. Nếu chỉ một góc bị tối, dùng shading.</dd>
+      </dl>
+    </article>
+
+    <article id="contrast">
+      <div class="tag">Contrast conversion</div>
+      <h3>Đẩy sáng và giãn tương phản toàn ảnh</h3>
+      <p>Điểm 128 giữ nguyên khi hệ số giãn bằng 256. Tăng offset thì cả ảnh sáng hơn. Tăng span thì vùng sáng và tối cách nhau xa hơn. Một phép nhân DSP cho mỗi điểm.</p>
+      <dl>
+        <dt>Khi nào dùng</dt>
+        <dd>Ảnh đúng bố cục nhưng xám, chênh nhau ít, mắt và phép tìm biên chưa thấy biên. Chỉnh sau khi đã bù nền.</dd>
+      </dl>
+    </article>
+
+    <article id="contrast-expansion">
+      <div class="tag">Contrast expansion</div>
+      <h3>Kéo dải xám có thật trong khung</h3>
+      <p>Lập histogram, bỏ một số điểm cực tối và cực sáng (cắt nhiễu), rồi kéo phần còn lại trải ra 0–255 theo độ kéo 0 đến 256. Độ kéo 256 thì điểm tối nhất còn lại thành 0 và điểm sáng nhất còn lại thành 255.</p>
+      <dl>
+        <dt>Khi nào dùng</dt>
+        <dd>Sản phẩm chỉ chiếm một dải xám hẹp, ví dụ mạch in nằm trong vùng 40 đến 90. Khác với contrast conversion: độ giãn được lấy từ chính khung đó, không phải một hệ số ghi sẵn.</dd>
+      </dl>
+    </article>
+
+    <h2 id="nhieu">Làm mịn và bỏ chấm</h2>
+
+    <article id="average">
+      <div class="tag">Average</div>
+      <h3>Trung bình 3×3</h3>
+      <p>Mỗi điểm thành trung bình chín điểm quanh nó. Ảnh phẳng giữ nguyên. Biên và chấm một điểm đều bị kéo về phía lân cận.</p>
+      <dl>
+        <dt>Khi nào dùng</dt>
+        <dd>Nền hạt nhẹ, không cần giữ cạnh sắc. Cũng là bước nền của image extraction.</dd>
+      </dl>
+    </article>
+
+    <article id="blur">
+      <div class="tag">Blur</div>
+      <h3>Làm mờ có hướng</h3>
+      <p>Hướng 0 là trung bình cả khối 3×3. Hướng 1 chỉ lấy hàng ngang. Hướng 2 chỉ lấy cột dọc.</p>
+      <dl>
+        <dt>Khi nào dùng</dt>
+        <dd>Kim loại có xước dọc hoặc sợi ngang không phải lỗi. Làm mờ đúng hướng đó để phép đo rộng mép bỏ qua các vân đó, vẫn giữ biên vuông góc với hướng mờ.</dd>
+      </dl>
+    </article>
+
+    <article id="median">
+      <div class="tag">Median</div>
+      <h3>Trung vị 3×3</h3>
+      <p>Lấy giá trị đứng giữa sau khi sắp chín điểm. Một điểm chói giữa vùng phẳng biến mất. Một cạnh thẳng, dài hơn một điểm, được giữ.</p>
+      <dl>
+        <dt>Khi nào dùng</dt>
+        <dd>Nhiễu muối tiêu, bụi sáng tối lẻ, trước khi tìm biên hoặc nhị phân. Trung bình làm cạnh bị mờ. Trung vị thì không.</dd>
+      </dl>
+    </article>
+
+    <article id="expand">
+      <div class="tag">Expand</div>
+      <h3>Nở: lấy điểm sáng nhất trong 3×3</h3>
+      <p>Chấm tối một điểm trên nền sáng thành sáng. Vùng sáng lan ra một điểm. Ảnh phẳng không đổi.</p>
+      <dl>
+        <dt>Khi nào dùng</dt>
+        <dd>Lỗ hoặc đứt một điểm cần bị lấp để biên mạch liền. Dùng một mình thì vật sáng bị phình. Muốn bỏ chấm tối mà giữ kích thước, dùng remove dark noise.</dd>
+      </dl>
+    </article>
+
+    <article id="shrink">
+      <div class="tag">Shrink</div>
+      <h3>Co: lấy điểm tối nhất trong 3×3</h3>
+      <p>Chấm sáng một điểm trên nền tối thành tối. Vùng sáng co lại một điểm.</p>
+      <dl>
+        <dt>Khi nào dùng</dt>
+        <dd>Bụi sáng lẻ trên nền tối. Vùng sáng hợp lệ bị mỏng đi một lớp. Muốn bỏ bụi mà giữ kích thước, dùng remove bright noise.</dd>
+      </dl>
+    </article>
+
+    <article id="remove-dark">
+      <div class="tag">Remove dark noise</div>
+      <h3>Đóng hình thái</h3>
+      <p>Nở rồi co. Chấm tối nhỏ hơn 3×3 mất. Một vùng tối lớn hơn cửa sổ gần như giữ nguyên diện.</p>
+      <dl>
+        <dt>Khi nào dùng</dt>
+        <dd>Nền sáng có lỗ bụi, sợi tối mỏng, trước khi đếm vùng sáng hoặc đo biên. Đảo thứ tự thành co rồi nở thì đây là bộ lọc kia.</dd>
+      </dl>
+    </article>
+
+    <article id="remove-bright">
+      <div class="tag">Remove bright noise</div>
+      <h3>Mở hình thái</h3>
+      <p>Co rồi nở. Chấm sáng nhỏ hơn 3×3 mất. Vùng sáng lớn giữ kích thước.</p>
+      <dl>
+        <dt>Khi nào dùng</dt>
+        <dd>Bụi phản quang, đốm laser, trước khi blob đếm vật sáng. Lỗi sáng thật nếu nhỏ hơn cửa sổ cũng mất theo.</dd>
+      </dl>
+    </article>
+
+    <h2 id="bien">Tìm biên</h2>
+    <p>Các bộ lọc biên đọc ảnh xám và trả về ảnh độ lớn: 0 là phẳng, số lớn là chỗ đổi xám. Ảnh phẳng ra 0, trừ sharpen. Chúng có thể chạy song song trên cùng một khung.</p>
+
+    <article id="sobel">
+      <div class="tag">Sobel X, Sobel Y, Sobel</div>
+      <h3>Biên ngang, dọc, và độ lớn hai hướng</h3>
+      <p>Sobel X bắt bước đổi xám theo hàng. Sobel Y bắt bước đổi theo cột. Một bậc từ 0 sang 255 cho kết quả 255. Sobel cộng hai độ lớn đó, cắt ở 255.</p>
+      <dl>
+        <dt>Khi nào dùng</dt>
+        <dd>Mép mạch, mép nhãn, khe hàn. Chỉ cần mép đứng thì X. Chỉ cần mép ngang thì Y. Cần mọi mép thì Sobel. Ảnh trước đó nên đã bù nền và bỏ chấm, nếu không hạt bề mặt cũng thành biên.</dd>
+      </dl>
+    </article>
+
+    <article id="prewitt">
+      <div class="tag">Prewitt</div>
+      <h3>Biên cộng ba điểm mỗi phía</h3>
+      <p>Cộng xám ba điểm bên trái trừ ba điểm bên phải, rồi làm tương tự theo cột, chia 3. Một bậc đầy đủ cũng ra 255. Ít nhạy nhiễu một điểm hơn Sobel.</p>
+      <dl>
+        <dt>Khi nào dùng</dt>
+        <dd>Mép dày, thẳng, nền hơi hạt. Cần mép mảnh và tương phản thấp thì Sobel rõ hơn.</dd>
+      </dl>
+    </article>
+
+    <article id="roberts">
+      <div class="tag">Roberts</div>
+      <h3>Biên chéo trên bốn điểm</h3>
+      <p>So điểm hiện tại với điểm chéo dưới-phải, và so hai điểm chéo còn lại. Bậc đứng đầy đủ tại cột trước cạnh ra 255.</p>
+      <dl>
+        <dt>Khi nào dùng</dt>
+        <dd>Cạnh nghiêng, góc in, nơi Sobel ngang và dọc đều yếu. Vùng rất nhiễu thì bốn điểm này dễ nhảy.</dd>
+      </dl>
+    </article>
+
+    <article id="laplacian">
+      <div class="tag">Laplacian</div>
+      <h3>Biên mọi hướng</h3>
+      <p>Bốn lần điểm giữa trừ bốn lân cận thẳng. Ảnh phẳng ra 0. Một điểm sáng hoặc một cạnh bất kỳ hướng đều ra lớn. Kết quả là trị tuyệt đối.</p>
+      <dl>
+        <dt>Khi nào dùng</dt>
+        <dd>Cần biết chỗ đổi xám mà không chọn trước hướng. Chấm và cạnh đều sáng trên ảnh ra, nên thường đi sau median.</dd>
+      </dl>
+    </article>
+
+    <article id="sharpen">
+      <div class="tag">Sharpen</div>
+      <h3>Làm nét</h3>
+      <p>Nhân điểm giữa với 5 rồi trừ bốn lân cận thẳng. Ảnh phẳng giữ đúng số xám. Chỗ đổi bị đẩy xa hơn, cạnh trông sắc hơn.</p>
+      <dl>
+        <dt>Khi nào dùng</dt>
+        <dd>Chữ in, vạch, mép mờ vì lệch tiêu hoặc vì bước làm mờ phía trước. Hạt nền cũng bị kéo theo, nên chỉ bật khi cạnh là thứ cần đọc.</dd>
+      </dl>
+    </article>
+
+    <h2 id="tach">Tách nền và vết</h2>
+
+    <article id="subtraction">
+      <div class="tag">Subtraction</div>
+      <h3>Trừ ảnh chuẩn</h3>
+      <p>Mỗi điểm là trị tuyệt đối của ảnh hiện tại trừ ảnh chuẩn đã đăng ký. Hai ảnh giống nhau ra 0. Chỗ khác 80 mức xám ra 80.</p>
+      <dl>
+        <dt>Khi nào dùng</dt>
+        <dd>Sản phẩm có hình phức tạp, mẫu tốt đã chụp cùng vị trí, cần thấy chỗ thiếu, thừa, bẩn. Lệch vị trí vài điểm tạo viền sáng giả. Nên khớp vị trí trước, hoặc chỉ dùng khi đồ gá giữ vật đúng chỗ.</dd>
+      </dl>
+    </article>
+
+    <article id="extract">
+      <div class="tag">Image extraction</div>
+      <h3>Bỏ nền chậm</h3>
+      <p>Lấy ảnh trừ trung bình 3×3, rồi cộng 128. Nền phẳng thành 128. Chỗ sáng hơn nền lên trên 128, chỗ tối hơn nền xuống dưới 128.</p>
+      <dl>
+        <dt>Khi nào dùng</dt>
+        <dd>Chữ, vết, hạt nổi trên nền đổi chậm, khi chưa có ảnh chuẩn để trừ. Vết rộng hơn 3×3 bị coi là nền và bị yếu đi.</dd>
+      </dl>
+    </article>
+
+    <article id="scratch">
+      <div class="tag">Scratch defect</div>
+      <h3>Giữ vết mảnh</h3>
+      <p>Trên từng hàng và từng cột, so điểm với phép mở và đóng bằng một đoạn thẳng dài 9 điểm. Nền phẳng và mảng lớn ra 0. Đường sáng hoặc tối mỏng hơn đoạn đó ra số lớn.</p>
+      <dl>
+        <dt>Khi nào dùng</dt>
+        <dd>Xước kim loại, nứt sợi, vết kéo trên mặt nhựa. Vết ngắn hơn vài điểm và vết dày cả vùng thì bộ này không phải công cụ chính. Blob hoặc subtraction hợp hơn.</dd>
+      </dl>
+    </article>
+
+    <article id="binary">
+      <div class="tag">Binary</div>
+      <h3>Nhị phân theo một khoảng xám</h3>
+      <p>Điểm nằm từ ngưỡng dưới đến ngưỡng trên thành 255. Điểm ngoài khoảng thành 0. Ngưỡng dưới 128 và trên 255 thì chỉ phần sáng thành trắng.</p>
+      <dl>
+        <dt>Khi nào dùng</dt>
+        <dd>Vật và nền đã tách thành hai cụm xám, sau shading hoặc contrast. Đây là cửa vào của blob. Nếu nền vẫn lệch trong khung, hạ ngưỡng cố định sẽ nuốt một phía ảnh.</dd>
+      </dl>
+    </article>
+
+    <h2 id="vung">Đếm vùng</h2>
+
+    <article id="blob">
+      <div class="tag">Blob</div>
+      <h3>Giữ cụm điểm liền nhau</h3>
+      <p>Điểm khác 0 là vật trắng, hoặc đúng 0 là vật đen, tùy cờ. Cụm 4 hướng (trên, dưới, trái, phải) được đo diện tích. Cụm nhỏ hơn diện tích tối thiểu bị bỏ. Nhiều nhất 64 cụm lớn nhất được giữ. Ảnh ra là mặt nạ: 255 tại cụm được giữ.</p>
+      <p>Cờ bit 0: vật trắng. Bit 1: lấp lỗ kín bên trong cụm trước khi đo. Bit 2: bỏ cụm chạm biên khung. Nhiều hơn 1024 nhãn thì các cụm thừa dùng chung một nhãn.</p>
+      <dl>
+        <dt>Khi nào dùng</dt>
+        <dd>Đếm viên, đếm lỗ, bỏ bụi theo diện tích sau khi ảnh đã nhị phân. Lấp lỗ khi viên có bóng sáng ở giữa. Bỏ cụm chạm biên khi vật bị cắt bởi khung hình không được tính.</dd>
+      </dl>
+    </article>
+
+    <article id="noise">
+      <div class="tag">Noise isolation</div>
+      <h3>Lấy hoặc xóa cụm rất sáng và rất tối</h3>
+      <p>Điểm từ 240 trở lên hoặc từ 16 trở xuống được coi là ứng viên. Cụm ứng viên có diện tích không quá mức cho trước thì bị chọn. Chế độ lấy chỉ để lại các cụm đó, nền thành 0. Chế độ xóa thay các cụm đó bằng trung vị 3×3 của ảnh gốc, phần còn lại giữ nguyên. Mảng lớn, ví dụ một ô 10×10 mức 255, không bị coi là nhiễu nếu diện tích tối đa nhỏ hơn ô đó.</p>
+      <dl>
+        <dt>Khi nào dùng</dt>
+        <dd>Bụi trắng và bụi đen kích thước biết trước trên nền mid-gray. Lấy khi muốn xem nhiễu. Xóa khi muốn đưa ảnh sạch sang bước đo. Ngưỡng 240 và 16 là cố định, nên nhiễu xám vừa phải không vào cụm này.</dd>
+      </dl>
+    </article>
+
+    <h2 id="den">Đèn nhiều hướng</h2>
+
+    <article id="lumitrax">
+      <div class="tag">LumiTrax</div>
+      <h3>Tách vân in và độ gồ ghề</h3>
+      <p>Cần bốn ảnh của cùng vật, mỗi ảnh một hướng đèn. Texture là trung bình bốn ảnh: phần nhìn thấy ở mọi hướng, thường là mực và màu. Shape là mức sáng nhất trừ mức tối nhất: phần đổi khi đèn đổi chỗ, thường là vết lồi lõm và xước nghiêng.</p>
+      <dl>
+        <dt>Khi nào dùng</dt>
+        <dd>Mặt bóng vừa có in vừa có vết dập. Một ảnh đèn thẳng làm hai thứ đó chồng lên nhau. Bốn ảnh lệch đèn thì tách được. Một camera mono không phát được bốn hướng thì thuật toán này không có đủ đầu vào.</dd>
+      </dl>
+    </article>
+
+    <h2>Tóm tắt chọn nhanh</h2>
+    <table>
+      <thead>
+        <tr><th>Thứ cần thấy</th><th>Bộ lọc</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Nền sáng lệch vì hình cong</td><td>Shading</td></tr>
+        <tr><td>Cả khung tối hơn lúc dạy máy</td><td>Preserve intensity</td></tr>
+        <tr><td>Chấm bụi, giữ cạnh</td><td>Median, hoặc remove bright / remove dark</td></tr>
+        <tr><td>Vân một hướng không phải lỗi</td><td>Blur đúng hướng đó</td></tr>
+        <tr><td>Mép vật</td><td>Sobel, Prewitt hoặc Roberts</td></tr>
+        <tr><td>Khác với mẫu tốt đã chụp</td><td>Subtraction</td></tr>
+        <tr><td>Vết mỏng trên nền lớn</td><td>Scratch defect hoặc image extraction</td></tr>
+        <tr><td>Đếm vật sau khi đã tách nền</td><td>Binary rồi Blob</td></tr>
+        <tr><td>Vết lồi lõm và mực in cùng lúc</td><td>LumiTrax, với bốn ảnh đèn</td></tr>
+      </tbody>
+    </table>
+  </main>
+</body>
+</html>

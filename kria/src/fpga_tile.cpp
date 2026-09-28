@@ -29,6 +29,11 @@ constexpr std::uint32_t kTileH = 0x40;
 constexpr std::uint32_t kCycles = 0x48;
 
 constexpr std::size_t kBufferBytes = 2 * 1024 * 1024;
+constexpr std::uint32_t kReadyOffset = 0x100000;
+
+void publish_store() {
+    __asm__ __volatile__("dsb sy" ::: "memory");
+}
 
 }  // namespace
 
@@ -158,56 +163,81 @@ std::uint32_t FpgaTile::read_reg(std::uint32_t offset) const {
     return regs_[offset / 4];
 }
 
+volatile std::uint32_t* FpgaTile::ready_word() const {
+    return reinterpret_cast<volatile std::uint32_t*>(static_cast<std::uint8_t*>(input_.virt) + kReadyOffset);
+}
+
+bool FpgaTile::arm(int width, int height, int tile_width, int tile_height, std::string& error) {
+    if (regs_ == nullptr || input_.virt == nullptr || width < 1 || height < 1) {
+        error = "FPGA tile core is not ready";
+        return false;
+    }
+    const std::size_t bytes = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+    if (bytes > kReadyOffset || bytes > kBufferBytes) {
+        error = "Frame is larger than the FPGA buffer";
+        return false;
+    }
+    *ready_word() = 0;
+    publish_store();
+    write_reg(kImageInLo, static_cast<std::uint32_t>(input_.phys));
+    write_reg(kImageInHi, static_cast<std::uint32_t>(input_.phys >> 32));
+    write_reg(kImageOutLo, static_cast<std::uint32_t>(output_.phys));
+    write_reg(kImageOutHi, static_cast<std::uint32_t>(output_.phys >> 32));
+    write_reg(kWidth, static_cast<std::uint32_t>(width));
+    write_reg(kHeight, static_cast<std::uint32_t>(height));
+    write_reg(kTileW, static_cast<std::uint32_t>(tile_width));
+    write_reg(kTileH, static_cast<std::uint32_t>(tile_height));
+    armed_at_ = std::chrono::steady_clock::now();
+    write_reg(kControl, 0x0);
+    write_reg(kControl, 0x1);
+    armed_ = true;
+    return true;
+}
+
+void FpgaTile::publish_rows(int count) {
+    if (!armed_ || input_.virt == nullptr) {
+        return;
+    }
+    *ready_word() = static_cast<std::uint32_t>(count);
+    publish_store();
+}
+
+bool FpgaTile::wait(int width, int height, cv::Mat& output, std::uint32_t& cycles, double& wait_us, std::string& error) {
+    if (!armed_) {
+        error = "FPGA tile core was not started";
+        return false;
+    }
+    const auto deadline = armed_at_ + std::chrono::seconds(2);
+    while ((read_reg(kControl) & 0x2) == 0) {
+        if (std::chrono::steady_clock::now() > deadline) {
+            error = "FPGA tile core timed out, control=0x" + std::to_string(read_reg(kControl));
+            armed_ = false;
+            return false;
+        }
+    }
+    cycles = read_reg(kCycles);
+    wait_us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - armed_at_).count();
+    armed_ = false;
+    const std::size_t bytes = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+    output = cv::Mat(height, width, CV_8UC1, output_.virt);
+    (void)bytes;
+    return true;
+}
+
 bool FpgaTile::process(const cv::Mat& gray, cv::Mat& output, int tile_width, int tile_height,
                        std::uint32_t& cycles, double& wait_us, std::string& error) {
     if (regs_ == nullptr || gray.empty() || gray.type() != CV_8UC1) {
         error = "FPGA tile core is not ready";
         return false;
     }
-    const std::size_t bytes = static_cast<std::size_t>(gray.cols) * static_cast<std::size_t>(gray.rows);
-    if (bytes > kBufferBytes) {
-        error = "Frame is larger than the FPGA buffer";
+    if (!arm(gray.cols, gray.rows, tile_width, tile_height, error)) {
         return false;
     }
-
-    auto* dst = static_cast<std::uint8_t*>(input_.virt);
-    if (gray.isContinuous()) {
-        std::memcpy(dst, gray.data, bytes);
-    } else {
-        for (int y = 0; y < gray.rows; ++y) {
-            std::memcpy(dst + static_cast<std::size_t>(y) * gray.cols, gray.ptr(y), gray.cols);
-        }
+    auto* dst = raw_input();
+    for (int y = 0; y < gray.rows; ++y) {
+        std::memcpy(dst + static_cast<std::size_t>(y) * static_cast<std::size_t>(gray.cols), gray.ptr(y),
+                    static_cast<std::size_t>(gray.cols));
+        publish_rows(y + 1);
     }
-    __builtin___clear_cache(reinterpret_cast<char*>(input_.virt),
-                            reinterpret_cast<char*>(input_.virt) + bytes);
-
-    write_reg(kImageInLo, static_cast<std::uint32_t>(input_.phys));
-    write_reg(kImageInHi, static_cast<std::uint32_t>(input_.phys >> 32));
-    write_reg(kImageOutLo, static_cast<std::uint32_t>(output_.phys));
-    write_reg(kImageOutHi, static_cast<std::uint32_t>(output_.phys >> 32));
-    write_reg(kWidth, static_cast<std::uint32_t>(gray.cols));
-    write_reg(kHeight, static_cast<std::uint32_t>(gray.rows));
-    write_reg(kTileW, static_cast<std::uint32_t>(tile_width));
-    write_reg(kTileH, static_cast<std::uint32_t>(tile_height));
-
-    const auto started = std::chrono::steady_clock::now();
-    write_reg(kControl, 0x0);
-    write_reg(kControl, 0x1);
-    const auto deadline = started + std::chrono::seconds(2);
-    while ((read_reg(kControl) & 0x2) == 0) {
-        if (std::chrono::steady_clock::now() > deadline) {
-            const std::uint32_t control = read_reg(kControl);
-            error = "FPGA tile core timed out, control=0x" + std::to_string(control) + " phys_in=0x" +
-                    std::to_string(input_.phys);
-            return false;
-        }
-    }
-    cycles = read_reg(kCycles);
-    wait_us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - started).count();
-
-    __builtin___clear_cache(reinterpret_cast<char*>(output_.virt),
-                            reinterpret_cast<char*>(output_.virt) + bytes);
-    // The caller encodes this view before the next process() call reuses the buffer.
-    output = cv::Mat(gray.rows, gray.cols, CV_8UC1, output_.virt);
-    return true;
+    return wait(gray.cols, gray.rows, output, cycles, wait_us, error);
 }

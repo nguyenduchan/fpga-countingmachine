@@ -18,7 +18,10 @@ struct AppConfig {
 #else
     std::string camera_model = "OV9281";
 #endif
+    std::string mode = "board";
+    std::string pixel_format = "MJPG";
     std::string video_device = "/dev/video0";
+    std::string host = "192.168.2.1";
     int width = 1280;
     int height = 800;
     int fps = 120;

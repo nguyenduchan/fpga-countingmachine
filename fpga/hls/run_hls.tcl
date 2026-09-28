@@ -1,6 +1,7 @@
 # Synthesize tile_brightness.cpp for the Kria KV260 (xck26) at 100 MHz.
 open_project tile_brightness_hls
 set_top tile_brightness
+add_files tile_brightness_core.hpp
 add_files tile_brightness.cpp
 open_solution sol1 -flow_target vivado
 set_part {xck26-sfvc784-2LV-c}

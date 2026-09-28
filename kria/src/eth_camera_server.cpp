@@ -2,6 +2,7 @@
 
 #include "fpga_tile.hpp"
 #include "logging.hpp"
+#include "mjpeg_decode.hpp"
 #include "protocol.hpp"
 
 #include <arpa/inet.h>
@@ -379,10 +380,13 @@ void run_session(int fd, const AppConfig& config, UsbCamera& camera, SessionCont
         int width = 0;
         int height = 0;
     };
+    std::mutex jpeg_mu;
+    std::condition_variable jpeg_cv;
+    std::deque<JpegFrame> jpeg_q;
+    std::atomic<int> jpeg_inflight{0};
+
     std::mutex queue_mu;
     std::condition_variable queue_cv;
-    std::deque<JpegFrame> camera_q;
-    std::deque<PixelFrame> decoded_q;
     std::deque<PixelFrame> balanced_q;
     std::atomic<bool> pipe_stop{false};
     std::string pipe_error;
@@ -390,126 +394,70 @@ void run_session(int fd, const AppConfig& config, UsbCamera& camera, SessionCont
     double fpga_wait_max_us = 0.0;
     int fpga_wait_count = 0;
 
-    // Camera reads never wait on the FPGA. The next USB frame is taken while
-    // the previous grayscale frame is still inside the accelerator.
-    std::thread capture_thread([&]() {
-        while (control.alive.load() && g_stop == 0 && !pipe_stop.load()) {
-            cv::Mat frame;
-            std::string read_error;
-            if (!camera.read(frame, read_error)) {
-                std::lock_guard<std::mutex> lock(queue_mu);
-                pipe_error = read_error;
-                pipe_stop = true;
-                queue_cv.notify_all();
-                break;
+    auto stop_pipe = [&](const std::string& message) {
+        {
+            std::lock_guard<std::mutex> lock(queue_mu);
+            if (!message.empty() && pipe_error.empty()) {
+                pipe_error = message;
             }
-            JpegFrame slot;
-            std::string encode_error;
-            slot.width = frame.cols;
-            slot.height = frame.rows;
-            if (!take_camera_jpeg(frame, slot.jpeg, slot.width, slot.height)) {
-                slot.jpeg = encode_jpeg(frame, config.jpeg_quality, encode_error);
-            }
-            if (slot.jpeg.empty() || slot.width <= 0 || slot.height <= 0) {
-                continue;
-            }
-            static bool logged_first = false;
-            if (!logged_first) {
-                logged_first = true;
-                log_line("Camera capture runs beside the FPGA, MJPEG " + std::to_string(slot.width) + "x" +
-                         std::to_string(slot.height) + " bytes=" + std::to_string(slot.jpeg.size()));
-            }
-            {
-                std::unique_lock<std::mutex> lock(queue_mu);
-                queue_cv.wait(lock, [&]() { return camera_q.size() < 6 || pipe_stop.load(); });
-                if (pipe_stop.load()) {
-                    break;
-                }
-                camera_q.push_back(std::move(slot));
-            }
-            queue_cv.notify_all();
+            pipe_stop = true;
         }
-        pipe_stop = true;
+        jpeg_cv.notify_all();
         queue_cv.notify_all();
-    });
+    };
 
+    // The camera thread only reads USB. The decode thread only expands MJPEG.
+    // Each queue has its own lock, so the next USB read runs while the previous
+    // frame is still inside the decoder.
     std::thread decode_thread([&]() {
-        tjhandle decoder = tjInitDecompress();
-        while (true) {
-            JpegFrame slot;
-            {
-                std::unique_lock<std::mutex> lock(queue_mu);
-                queue_cv.wait(lock, [&]() {
-                    return !camera_q.empty() || pipe_stop.load();
-                });
-                if (camera_q.empty()) {
-                    break;
-                }
-                slot = std::move(camera_q.front());
-                camera_q.pop_front();
-            }
-            queue_cv.notify_all();
-            PixelFrame gray;
-            gray.width = slot.width;
-            gray.height = slot.height;
-            gray.pixels.resize(static_cast<std::size_t>(slot.width) * static_cast<std::size_t>(slot.height));
-            if (tjDecompress2(decoder, slot.jpeg.data(), static_cast<unsigned long>(slot.jpeg.size()),
-                              gray.pixels.data(), slot.width, 0, slot.height, TJPF_GRAY,
-                              TJFLAG_FASTDCT | TJFLAG_FASTUPSAMPLE) != 0) {
-                continue;
-            }
-            {
-                std::unique_lock<std::mutex> lock(queue_mu);
-                queue_cv.wait(lock, [&]() { return decoded_q.size() < 2 || pipe_stop.load(); });
-                if (pipe_stop.load() && decoded_q.size() >= 2) {
-                    break;
-                }
-                decoded_q.push_back(std::move(gray));
-            }
-            queue_cv.notify_all();
-        }
-        tjDestroy(decoder);
-        queue_cv.notify_all();
-    });
-
-    std::thread fpga_thread([&]() {
+        MjpegDecoder decoder(config.video_device);
+        decoder.prepare(config.width, config.height);
         FpgaTile fpga;
         std::string open_error;
         if (!fpga.open(open_error)) {
             log_line(open_error);
-            std::lock_guard<std::mutex> lock(queue_mu);
-            pipe_error = open_error;
-            pipe_stop = true;
-            queue_cv.notify_all();
+            stop_pipe(open_error);
             return;
         }
+        log_line("Raw rows go into the shared FPGA window. " + decoder.backend());
         while (true) {
-            PixelFrame slot;
+            JpegFrame slot;
             {
-                std::unique_lock<std::mutex> lock(queue_mu);
-                queue_cv.wait(lock, [&]() { return !decoded_q.empty() || pipe_stop.load(); });
-                if (decoded_q.empty()) {
+                std::unique_lock<std::mutex> lock(jpeg_mu);
+                jpeg_cv.wait(lock, [&]() { return !jpeg_q.empty() || pipe_stop.load(); });
+                if (jpeg_q.empty()) {
                     break;
                 }
-                slot = std::move(decoded_q.front());
-                decoded_q.pop_front();
+                slot = std::move(jpeg_q.front());
+                jpeg_q.pop_front();
             }
-            queue_cv.notify_all();
-            cv::Mat gray(slot.height, slot.width, CV_8UC1, slot.pixels.data());
+            jpeg_cv.notify_all();
+            std::string run_error;
+            if (!fpga.arm(slot.width, slot.height, config.tile_width, config.tile_height, run_error)) {
+                jpeg_inflight.fetch_sub(1);
+                stop_pipe(run_error);
+                break;
+            }
+            if (!decoder.decode_rows(slot.jpeg.data(), slot.jpeg.size(), slot.width, slot.height, fpga.raw_input(),
+                                     [](void* ctx, int rows) { static_cast<FpgaTile*>(ctx)->publish_rows(rows); },
+                                     &fpga)) {
+                fpga.publish_rows(slot.height);
+                cv::Mat discarded;
+                std::uint32_t ignored_cycles = 0;
+                double ignored_us = 0.0;
+                std::string ignored_error;
+                fpga.wait(slot.width, slot.height, discarded, ignored_cycles, ignored_us, ignored_error);
+                jpeg_inflight.fetch_sub(1);
+                continue;
+            }
             cv::Mat processed;
             std::uint32_t cycles = 0;
             double wait_us = 0.0;
-            std::string run_error;
-            if (!fpga.process(gray, processed, config.tile_width, config.tile_height, cycles, wait_us, run_error) ||
-                cycles == 0 || processed.empty()) {
-                log_line("fpga reject gray " + std::to_string(gray.cols) + "x" + std::to_string(gray.rows) + " tile " +
-                         std::to_string(config.tile_width) + "x" + std::to_string(config.tile_height) + " cycles " +
-                         std::to_string(cycles) + " wait " + std::to_string(static_cast<int>(wait_us)) + " err " +
-                         run_error);
-                std::lock_guard<std::mutex> lock(queue_mu);
-                pipe_error = run_error.empty() ? "FPGA tile core returned no result" : run_error;
-                pipe_stop = true;
-                queue_cv.notify_all();
+            if (!fpga.wait(slot.width, slot.height, processed, cycles, wait_us, run_error) || cycles == 0 ||
+                processed.empty()) {
+                log_line(run_error.empty() ? "FPGA tile core returned no result" : run_error);
+                stop_pipe(run_error.empty() ? "FPGA tile core returned no result" : run_error);
+                jpeg_inflight.fetch_sub(1);
                 break;
             }
             PixelFrame out;
@@ -525,8 +473,49 @@ void run_session(int fd, const AppConfig& config, UsbCamera& camera, SessionCont
                 ++fpga_wait_count;
                 balanced_q.push_back(std::move(out));
             }
+            jpeg_inflight.fetch_sub(1);
             queue_cv.notify_all();
         }
+        queue_cv.notify_all();
+    });
+
+    std::thread capture_thread([&]() {
+        while (control.alive.load() && g_stop == 0 && !pipe_stop.load()) {
+            cv::Mat frame;
+            std::string read_error;
+            if (!camera.read(frame, read_error)) {
+                stop_pipe(read_error);
+                break;
+            }
+            JpegFrame slot;
+            std::string encode_error;
+            slot.width = frame.cols;
+            slot.height = frame.rows;
+            if (!take_camera_jpeg(frame, slot.jpeg, slot.width, slot.height)) {
+                slot.jpeg = encode_jpeg(frame, config.jpeg_quality, encode_error);
+            }
+            frame.release();
+            if (slot.jpeg.empty() || slot.width <= 0 || slot.height <= 0) {
+                continue;
+            }
+            {
+                std::unique_lock<std::mutex> lock(jpeg_mu);
+                jpeg_cv.wait(lock, [&]() { return jpeg_q.size() < 8 || pipe_stop.load(); });
+                if (pipe_stop.load()) {
+                    break;
+                }
+                jpeg_q.push_back(std::move(slot));
+                jpeg_inflight.fetch_add(1);
+            }
+            jpeg_cv.notify_all();
+            static bool logged_first = false;
+            if (!logged_first) {
+                logged_first = true;
+                log_line("Camera read thread overlaps MJPEG decode, " + std::to_string(camera.width()) + "x" +
+                         std::to_string(camera.height()));
+            }
+        }
+        stop_pipe("");
     });
 
     while (control.alive.load() && g_stop == 0) {
@@ -537,11 +526,10 @@ void run_session(int fd, const AppConfig& config, UsbCamera& camera, SessionCont
         {
             std::unique_lock<std::mutex> lock(queue_mu);
             queue_cv.wait_for(lock, std::chrono::milliseconds(50), [&]() {
-                return !balanced_q.empty() ||
-                       (pipe_stop.load() && camera_q.empty() && decoded_q.empty() && balanced_q.empty());
+                return !balanced_q.empty() || (pipe_stop.load() && jpeg_inflight.load() == 0 && balanced_q.empty());
             });
             if (balanced_q.empty()) {
-                if (pipe_stop.load() && camera_q.empty() && decoded_q.empty()) {
+                if (pipe_stop.load() && jpeg_inflight.load() == 0) {
                     break;
                 }
                 continue;
@@ -581,11 +569,9 @@ void run_session(int fd, const AppConfig& config, UsbCamera& camera, SessionCont
                      " us; sent at " + std::to_string(actual_fps) + " fps");
         }
     }
-    pipe_stop = true;
-    queue_cv.notify_all();
+    stop_pipe("");
     capture_thread.join();
     decode_thread.join();
-    fpga_thread.join();
     if (!pipe_error.empty()) {
         log_line(pipe_error);
         send_error(fd, pipe_error);

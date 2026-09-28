@@ -59,8 +59,14 @@ bool AppConfig::load_file(const std::string& path) {
             ubuntu_version = value;
         } else if (key == "camera_model") {
             camera_model = value;
+        } else if (key == "mode") {
+            mode = value;
+        } else if (key == "pixel_format") {
+            pixel_format = value;
         } else if (key == "video_device") {
             video_device = value;
+        } else if (key == "host") {
+            host = value;
         } else if (key == "bind_address") {
             bind_address = value;
         } else if (key == "width" && parse_int(value, number)) {
@@ -93,8 +99,17 @@ void AppConfig::sanitize() {
     if (camera_model.empty()) {
         camera_model = "OV9281";
     }
+    if (mode.empty()) {
+        mode = "board";
+    }
+    if (pixel_format.empty()) {
+        pixel_format = "MJPG";
+    }
     if (video_device.empty()) {
         video_device = "/dev/video0";
+    }
+    if (host.empty()) {
+        host = "192.168.2.1";
     }
     if (bind_address.empty()) {
         bind_address = "0.0.0.0";
